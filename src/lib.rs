@@ -4,6 +4,8 @@ use winit::{
 	keyboard::{KeyCode, PhysicalKey},
 	window::WindowBuilder,
 };
+use std::{borrow::Cow};
+use wgpu::util::DeviceExt;
 
 pub async fn run() {
 	env_logger::init();
@@ -12,6 +14,20 @@ pub async fn run() {
 
 	let mut state = State::new(&window).await;
 	let mut surface_configured = false;
+
+	let shader = state.create_compute_shader("
+	@group(0) @binding(0) var<storage, read_write> v_indices: array<u32>;
+@compute @workgroup_size(1)
+fn main() {
+  v_indices[0]++;
+}");//include_str!("compute.wgsl").into()
+let storage_buffer = state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+	label: Some("Storage Buffer"),
+	contents: &[100],
+	usage: wgpu::BufferUsages::STORAGE
+			| wgpu::BufferUsages::COPY_DST
+			| wgpu::BufferUsages::COPY_SRC,
+});
 
 	let _ = event_loop.run(move |event, control_flow| {
 			match event {
@@ -37,14 +53,13 @@ pub async fn run() {
 							}
 
 							WindowEvent::RedrawRequested => {
-								// This tells winit that we want another frame after this one
-								state.window().request_redraw();
-
 								if !surface_configured {
 										return;
 								}
 
-								state.update();
+								state.run_compute_shader(&shader, [&storage_buffer]);
+
+								/*state.update();
 								match state.render() {
 										Ok(_) => {}
 										// Reconfigure the surface if it's lost or outdated
@@ -61,7 +76,10 @@ pub async fn run() {
 										Err(wgpu::SurfaceError::Timeout) => {
 												log::warn!("Surface timeout")
 										}
-								}
+								}*/
+
+								// This tells winit that we want another frame after this one
+								state.window().request_redraw();
 							}
 
 							_ => {}
@@ -92,64 +110,62 @@ struct State<'a> {
 use wgpu::PresentMode;
 
 impl<'a> State<'a> {
-    pub fn window(&self) -> &Window {
-        &self.window
-    }
+	pub fn window(&self) -> &Window {
+			&self.window
+	}
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-			if new_size.width > 0 && new_size.height > 0 {
-					self.size = new_size;
-					self.config.width = new_size.width;
-					self.config.height = new_size.height;
-					self.surface.configure(&self.device, &self.config);
-			}
+	pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+		if new_size.width > 0 && new_size.height > 0 {
+				self.size = new_size;
+				self.config.width = new_size.width;
+				self.config.height = new_size.height;
+				self.surface.configure(&self.device, &self.config);
+		}
+	}
+
+	#[allow(unused_variables)]
+	fn input(&mut self, event: &WindowEvent) -> bool {
+			false
+	}
+
+	/*fn update(&mut self) {}
+
+	fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+		let output = self.surface.get_current_texture()?;
+		let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+		let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+			label: Some("Render Encoder"),
+		});
+		
+		{
+			let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+					label: Some("Render Pass"),
+					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+							view: &view,
+							resolve_target: None,
+							ops: wgpu::Operations {
+									load: wgpu::LoadOp::Clear(wgpu::Color {
+											r: 0.1,
+											g: 0.2,
+											b: 0.3,
+											a: 1.0,
+									}),
+									store: wgpu::StoreOp::Store,
+							},
+					})],
+					depth_stencil_attachment: None,
+					occlusion_query_set: None,
+					timestamp_writes: None,
+			});
 		}
 
-		#[allow(unused_variables)]
-		fn input(&mut self, event: &WindowEvent) -> bool {
-				false
-		}
+		// submit will accept anything that implements IntoIter
+		self.queue.submit(std::iter::once(encoder.finish()));
+		output.present();
 
-		fn update(&mut self) {}
+		Ok(())
+	}*/
 
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-			let output = self.surface.get_current_texture()?;
-			let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-			let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Render Encoder"),
-    	});
-			
-			{
-        let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Render Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.1,
-                        g: 0.2,
-                        b: 0.3,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-        });
-			}
-
-			// submit will accept anything that implements IntoIter
-			self.queue.submit(std::iter::once(encoder.finish()));
-			output.present();
-
-			Ok(())
-    }
-}
-impl<'a> State<'a> {
-	// ...
 	async fn new(window: &'a Window) -> State<'a> {
 			let size = window.inner_size();
 
@@ -216,5 +232,60 @@ impl<'a> State<'a> {
 			config,
 			size,
 		}
+	}
+
+	fn create_compute_shader(&self, source: &str) -> wgpu::ComputePipeline {
+		let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+				label: Some("Compute Shader"),
+				source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(source)),
+		});
+
+		/*let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+				label: Some("Compute Pipeline Layout"),
+				bind_group_layouts: &[],
+				push_constant_ranges: &[],
+		});*/
+
+		let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+				label: Some("Compute Pipeline"),
+				layout: None, //Some(&pipeline_layout),
+				module: &shader,
+				entry_point: Some("main"),
+				compilation_options: Default::default(),
+        cache: None,
+		});
+
+		return compute_pipeline;
+	}
+	fn run_compute_shader<const N: usize>(&self, compute_pipeline: &wgpu::ComputePipeline, buffers: [&wgpu::Buffer; N]) {
+		let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+		let mut bi = 0;
+    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bind_group_layout,
+        entries: &buffers.map(|buffer| {
+					bi += 1;
+					wgpu::BindGroupEntry {
+            binding: bi-1,
+            resource: buffer.as_entire_binding(),
+        	}
+				}),
+    });
+
+		let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+				label: Some("Compute Encoder"),
+		});
+
+		{
+				let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+						label: Some("Compute Pass"),
+						timestamp_writes: None,
+				});
+				compute_pass.set_pipeline(&compute_pipeline);
+				compute_pass.set_bind_group(0, &bind_group, &[]);
+				compute_pass.dispatch_workgroups(1, 1, 1);
+		}
+
+		self.queue.submit(Some(encoder.finish()));
 	}
 }
