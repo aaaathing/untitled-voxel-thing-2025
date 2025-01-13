@@ -13,6 +13,7 @@ log = "0.4"
 wgpu = "23.0"
 cfg-if = "1"
 futures = "0.3.31"
+range-alloc = "0.1.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1.6"

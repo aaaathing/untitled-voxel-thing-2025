@@ -15,19 +15,7 @@ pub async fn run() {
 	let mut state = State::new(&window).await;
 	let mut surface_configured = false;
 
-	let shader = state.create_compute_shader("
-	@group(0) @binding(0) var<storage, read_write> v_indices: array<u32>;
-@compute @workgroup_size(1)
-fn main() {
-  v_indices[0]++;
-}");//include_str!("compute.wgsl").into()
-let storage_buffer = state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-	label: Some("Storage Buffer"),
-	contents: &[100],
-	usage: wgpu::BufferUsages::STORAGE
-			| wgpu::BufferUsages::COPY_DST
-			| wgpu::BufferUsages::COPY_SRC,
-});
+	let mut world = World::new(&state);
 
 	let _ = event_loop.run(move |event, control_flow| {
 			match event {
@@ -57,7 +45,7 @@ let storage_buffer = state.device.create_buffer_init(&wgpu::util::BufferInitDesc
 										return;
 								}
 
-								state.run_compute_shader(&shader, [&storage_buffer]);
+								world.tick();
 
 								/*state.update();
 								match state.render() {
@@ -233,8 +221,11 @@ impl<'a> State<'a> {
 			size,
 		}
 	}
+}
 
-	fn create_compute_shader(&self, source: &str) -> wgpu::ComputePipeline {
+type ComputeShader = wgpu::ComputePipeline;
+impl<'a> State<'a>{
+	fn create_compute_shader(&self, source: &str, entry_point: str) -> wgpu::ComputePipeline {
 		let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
 				label: Some("Compute Shader"),
 				source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(source)),
@@ -247,17 +238,17 @@ impl<'a> State<'a> {
 		});*/
 
 		let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-				label: Some("Compute Pipeline"),
+				label: Some("Compute shader"),
 				layout: None, //Some(&pipeline_layout),
 				module: &shader,
-				entry_point: Some("main"),
+				entry_point: Some(entry_point),
 				compilation_options: Default::default(),
         cache: None,
 		});
 
 		return compute_pipeline;
 	}
-	fn run_compute_shader<const N: usize>(&self, compute_pipeline: &wgpu::ComputePipeline, buffers: [&wgpu::Buffer; N]) {
+	fn run_compute_shader<const N: usize>(&self, compute_pipeline: &wgpu::ComputePipeline, buffers: [&wgpu::Buffer; N], size_x:u32, size_y:u32, size_z:u32) {
 		let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
 		let mut bi = 0;
     let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -271,19 +262,15 @@ impl<'a> State<'a> {
         	}
 				}),
     });
-
-		let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-				label: Some("Compute Encoder"),
-		});
-
+		let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Compute Encoder") });
 		{
-				let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-						label: Some("Compute Pass"),
-						timestamp_writes: None,
-				});
-				compute_pass.set_pipeline(&compute_pipeline);
-				compute_pass.set_bind_group(0, &bind_group, &[]);
-				compute_pass.dispatch_workgroups(1, 1, 1);
+			let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+					label: Some("Compute Pass"),
+					timestamp_writes: None,
+			});
+			compute_pass.set_pipeline(&compute_pipeline);
+			compute_pass.set_bind_group(0, &bind_group, &[]);
+			compute_pass.dispatch_workgroups(size_x, size_y, size_z);
 		}
 
 		self.queue.submit(Some(encoder.finish()));

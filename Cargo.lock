@@ -1695,6 +1695,7 @@ dependencies = [
  "env_logger",
  "futures",
  "log",
+ "range-alloc",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
