@@ -5,7 +5,9 @@ use winit::{
 	window::WindowBuilder,
 };
 use std::{borrow::Cow};
-use wgpu::util::DeviceExt;
+
+mod world;
+use world::World;
 
 pub async fn run() {
 	env_logger::init();
@@ -45,7 +47,7 @@ pub async fn run() {
 										return;
 								}
 
-								world.tick();
+								world.tick(&state);
 
 								/*state.update();
 								match state.render() {
@@ -223,54 +225,79 @@ impl<'a> State<'a> {
 	}
 }
 
-type ComputeShader = wgpu::ComputePipeline;
+type ComputeShader = Vec<wgpu::ComputePipeline>;
+use regex::{Regex};
 impl<'a> State<'a>{
-	fn create_compute_shader(&self, source: &str, entry_point: str) -> wgpu::ComputePipeline {
+	fn create_compute_shader(&self, source: &str, entry_point: &str) -> Vec<wgpu::ComputePipeline> {
 		let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
 				label: Some("Compute Shader"),
 				source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(source)),
 		});
 
-		/*let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-				label: Some("Compute Pipeline Layout"),
-				bind_group_layouts: &[],
-				push_constant_ranges: &[],
-		});*/
+		let re = Regex::new(&(r"#multistep ".to_owned()+entry_point+r": (.*?)\n")).unwrap();
+		//for example: #multistep do_these: do_this, do_that
+		let cap = re.captures(source);
+		
+		let mut compute_pipelines = Vec::new();
+		if cap.is_none(){
+			print!("single step");
+			compute_pipelines.push(
+				self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+					label: Some("Compute shader"),
+					layout: None, //Some(&pipeline_layout),
+					module: &shader,
+					entry_point: Some(entry_point),
+					compilation_options: Default::default(),
+					cache: None,
+				})
+			);
+		}else{
+			let caps = cap.unwrap();
+			let multi_entry_point = caps[1].split(", ");
+			print!("multi step {:#?}", &caps);
+			for entry_point in multi_entry_point{
+				compute_pipelines.push(
+					self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+						label: Some("Compute shader"),
+						layout: None,
+						module: &shader,
+						entry_point: Some(&entry_point),
+						compilation_options: Default::default(),
+						cache: None,
+					})
+				);
+			}
+		}
 
-		let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-				label: Some("Compute shader"),
-				layout: None, //Some(&pipeline_layout),
-				module: &shader,
-				entry_point: Some(entry_point),
-				compilation_options: Default::default(),
-        cache: None,
-		});
+		print!("{:#?}",compute_pipelines);
 
-		return compute_pipeline;
+		return compute_pipelines;
 	}
-	fn run_compute_shader<const N: usize>(&self, compute_pipeline: &wgpu::ComputePipeline, buffers: [&wgpu::Buffer; N], size_x:u32, size_y:u32, size_z:u32) {
-		let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
-		let mut bi = 0;
-    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &bind_group_layout,
-        entries: &buffers.map(|buffer| {
-					bi += 1;
-					wgpu::BindGroupEntry {
-            binding: bi-1,
-            resource: buffer.as_entire_binding(),
-        	}
-				}),
-    });
+	fn run_compute_shader<const N: usize>(&self, compute_pipelines: &Vec<wgpu::ComputePipeline>, buffers: [&wgpu::Buffer; N], size_x:u32, size_y:u32, size_z:u32) {
 		let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Compute Encoder") });
 		{
 			let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
 					label: Some("Compute Pass"),
 					timestamp_writes: None,
 			});
-			compute_pass.set_pipeline(&compute_pipeline);
-			compute_pass.set_bind_group(0, &bind_group, &[]);
-			compute_pass.dispatch_workgroups(size_x, size_y, size_z);
+			for compute_pipeline in compute_pipelines.iter(){
+				let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+				let mut bi = 0;
+				let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+						label: None,
+						layout: &bind_group_layout,
+						entries: &buffers.map(|buffer| {
+							bi += 1;
+							wgpu::BindGroupEntry {
+								binding: bi-1,
+								resource: buffer.as_entire_binding(),
+							}
+						}),
+				});
+				compute_pass.set_pipeline(&compute_pipeline);
+				compute_pass.set_bind_group(0, &bind_group, &[]);
+				compute_pass.dispatch_workgroups(size_x, size_y, size_z);
+			}
 		}
 
 		self.queue.submit(Some(encoder.finish()));

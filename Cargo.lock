@@ -1696,6 +1696,7 @@ dependencies = [
  "futures",
  "log",
  "range-alloc",
+ "regex",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
