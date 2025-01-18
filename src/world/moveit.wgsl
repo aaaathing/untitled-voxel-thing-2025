@@ -1,5 +1,9 @@
 //#multistep main: updateVel, updatePos
 
+//struct update_attrs{
+//  id: u32
+//};
+
 @group(0) @binding(0) var<storage, read_write> volumes: array<u32>;
 @group(0) @binding(1) var<storage, read_write> allobjects: array<Object>;
 @compute @workgroup_size(1)

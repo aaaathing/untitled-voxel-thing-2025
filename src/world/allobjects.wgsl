@@ -2,7 +2,8 @@ struct Object {
 	position: vec3f,
 	bounds_min: vec3f,
 	bounds_max: vec3f,
-	velocity: vec3f
+	velocity: vec3f,
+	attributes: u32, //pointer
 };
 
 @group(0) @binding(0)

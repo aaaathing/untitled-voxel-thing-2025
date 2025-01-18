@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<canvas></canvas>
+<script type="module">
+	import {RenderStuff} from "./index.js"
+	import {World} from "./world/world.js"
+	let renderStuff = new RenderStuff(document.querySelector("canvas"))
+	await renderStuff.init()
+	window.renderStuff = renderStuff
+	let world = new World(renderStuff)
+	window.world = world
+
+	renderStuff.device.queue.writeBuffer(world.allobjects_buffer,0,new Float32Array([1,2,3,0,0,0,0,0,0,0,0,0,0,0,0,0, 5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0]))
+	console.log(new Float32Array((await renderStuff.read_buffer(world.allobjects_buffer)).buffer))
+	await world.tick()
+	console.log(new Float32Array((await renderStuff.read_buffer(world.allobjects_buffer)).buffer))
+</script>
