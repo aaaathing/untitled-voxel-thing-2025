@@ -1,3 +1,5 @@
+import allobjects from "./allobjects.wgsl.js"
+export default /*wgsl*/`
 //#multistep main: updateVel, updatePos
 
 //struct update_attrs{
@@ -35,3 +37,6 @@ fn updatePos(@builtin(global_invocation_id) id: vec3<u32>){
 fn objects_collide(o1:Object, o2:Object) -> bool{ //simple
   return all(o1.position + o1.bounds_min < o2.position + o2.bounds_max) && all(o1.position + o1.bounds_max > o2.position + o2.bounds_min);
 }
+
+${allobjects}
+`

@@ -3,7 +3,7 @@ import moveit from "./moveit.wgsl.js"
 export class World{
 	constructor(renderStuff){
 		this.renderStuff = renderStuff
-		this.moveit = renderStuff.create_compute_shader(moveit+allobjects, "main")
+		this.moveit = renderStuff.create_compute_shader(moveit, "main")
 		this.volume_buffer = renderStuff.device.createBuffer({
 			size:4,
 			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST

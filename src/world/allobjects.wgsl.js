@@ -1,3 +1,4 @@
+export default /*wgsl*/`
 struct Object {
 	position: vec3f,
 	bounds_min: vec3f,
@@ -12,3 +13,4 @@ var<storage, read_write> allobjects0: array<Object>;
 fn rebuild(){
 	//todo
 }
+`
