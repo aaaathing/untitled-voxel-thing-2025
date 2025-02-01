@@ -1,3 +1,6 @@
-<script>
-	import("./world/cpu-parallelizer.js").then(r => window.v=r)
+<script type="module">
+	import {CPU_Parallelizer} from "./cpu-parallelizer.js"
+	import {World} from "./world/world.js"
+	let world = new World(new CPU_Parallelizer())
+	window.world = world
 </script>
