@@ -11,5 +11,10 @@ var fs = require('fs');
 	}else next()
 })*/
 
+app.use((req,res,next) => {
+	res.header("Cross-Origin-Opener-Policy","same-origin")
+	res.header("Cross-Origin-Embedder-Policy","credentialless")
+	next()
+})
 app.use(express.static(__dirname+'/src'))
 app.listen(80)
