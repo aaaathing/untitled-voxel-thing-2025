@@ -29,46 +29,27 @@ export class CPU_Parallelizer{
 	}
 	create(include, func){
 		let oldStr = include.map(i => i.toString()) + "; return "+func.toString()
-		let t = acorn.parse(oldStr, {ecmaVersion: 2025, allowReturnOutsideFunction:true})
-		let vartypes = {}, classes = {}
+		let ast = acorn.parse(oldStr, {ecmaVersion: 2025, allowReturnOutsideFunction:true})
+		getDefinitions(ast)
 		let replace = []
-		acorn.walk.ancestor(t, {
-			CallExpression:function(node, state, ancestors){
-				// like: typeof thing === Number
-				if(node.callee.name === "type"){
-					let type = node.arguments[1].name
-					let varname = node.arguments[0].name
-					if(!classes[type]) throw new Error("missing class for "+type)
-					vartypes[varname] = {block:ancestors.findLast(n => n.type === "BlockStatement"), class:classes[type]}
-				}
-			},
-			MemberExpression:function(node, state, ancestors){
-				if(vartypes[node.object.name] && ancestors.includes(vartypes[node.object.name].block)){
-					let prop = vartypes[node.object.name].class.properties[node.property.name]
-					if(!prop) throw new Error("missing property "+node.property.name)
-					replace.push([node.start,node.end, "themem["+node.object.name+"+"+prop.offset+"]"])
-				}
-			},
-			ClassDeclaration:function(node, state, ancestors){
-				let properties = {}, offset = 0
-				for(let d of node.body.body){
-					if(d.type === "PropertyDefinition"){
-						properties[d.key.name] = {offset}
-						offset++ //todo: depend on type
-					}
-				}
-				classes[node.id.name] = {block:ancestors.findLast(n => n.type === "BlockStatement"), properties}
+		acorn.walk.full(ast, function(node, state, type){
+			if(node.getFromBuffer){
+				replace.push([node, node.getFromBuffer[0]+"["+node.getFromBuffer[1]+"+"+node.getFromBuffer[2]+"]"])
+			}
+			if(node.remove){
+				replace.push([node, ""])
 			}
 		})
-		replace.sort((a,b) => (a[0]-b[0])||(a[3]-b[3])||0)
+		replace.sort((a,b) => (a[0].start-b[0].start)||0)
 		let str="",previ=0
 		for(let i of replace){
-			str+=oldStr.slice(previ,i[0])
-			str+=i[2]
-			previ=i[1]
+			str+=oldStr.slice(previ,i[0].start)
+			str+=i[1]
+			previ=i[0].end
 		}
 		str+=oldStr.slice(previ)
 		console.log(str)
+
 		let name = this.curId++
 		for(let w of this.w) w.postMessage({type:"create", name})
 		return function(sx,sy,sz,...args){
@@ -80,4 +61,39 @@ export class CPU_Parallelizer{
 			}
 		}
 	}
+}
+
+export function getDefinitions(ast){
+	let vartypes = {}, classes = {}
+	acorn.walk.ancestor(ast, {
+		CallExpression:function(node, state, ancestors){
+			// like: typeof thing === Number
+			if(node.callee.name === "type"){
+				let varname = node.arguments[0].name
+				let type = node.arguments[1].name
+				let inWhichBuffer = node.arguments[2].name
+				if(!classes[type]) throw new Error("missing class for "+type)
+				vartypes[varname] = {block:ancestors.findLast(n => n.type === "BlockStatement"), class:classes[type], inWhichBuffer}
+				node.remove = true
+			}
+		},
+		MemberExpression:function(node, state, ancestors){
+			if(vartypes[node.object.name] && ancestors.includes(vartypes[node.object.name].block)){
+				let type = vartypes[node.object.name]
+				let prop = type.class.properties[node.property.name]
+				if(!prop) throw new Error("missing property "+node.property.name)
+				node.getFromBuffer = [type.inWhichBuffer, node.object.name, prop.offset]
+			}
+		},
+		ClassDeclaration:function(node, state, ancestors){
+			let properties = {}, offset = 0
+			for(let d of node.body.body){
+				if(d.type === "PropertyDefinition"){
+					properties[d.key.name] = {offset}
+					offset++ //todo: depend on type
+				}
+			}
+			classes[node.id.name] = {block:ancestors.findLast(n => n.type === "BlockStatement"), properties}
+		}
+	})
 }

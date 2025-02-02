@@ -9,9 +9,9 @@ class PObject{
 export class World{
 	objects = []
 	constructor(parallelizer){
-		this.collide = parallelizer.create([PObject], function(x,y,z,o1,o2){
-			type(o1, PObject)
-			type(o2, PObject)
+		this.collide = parallelizer.create([PObject], function(x,y,z,allObjects,o1,o2){
+			type(o1, PObject, allObjects)
+			type(o2, PObject, allObjects)
 			let otherX = Math.floor(o1.x+o1.bounds_min_x+x - o2.x-o2.bounds_min_x)
 			let otherY = Math.floor(o1.y+o1.bounds_min_y+y - o2.y-o2.bounds_min_y)
 			let otherZ = Math.floor(o1.z+o1.bounds_min_z+z - o2.z-o2.bounds_min_z)
