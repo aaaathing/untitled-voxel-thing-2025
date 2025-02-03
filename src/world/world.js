@@ -9,7 +9,7 @@ class PObject{
 	vel_x:number;vel_y:number;vel_z:number
 	volume:number
 }`)
-		this.collide = parallelizer.create(`function(x,y,z,allObjects,o1:PObject<allObjects>,o2:PObject<allObjects>){
+		this.collide = parallelizer.createParallelFunc(`function(x,y,z,allObjects,o1:PObject<allObjects>,o2:PObject<allObjects>){
 			let otherX = Math.floor(o1.x+o1.bounds_min_x+x - o2.x-o2.bounds_min_x)
 			let otherY = Math.floor(o1.y+o1.bounds_min_y+y - o2.y-o2.bounds_min_y)
 			let otherZ = Math.floor(o1.z+o1.bounds_min_z+z - o2.z-o2.bounds_min_z)
@@ -17,6 +17,9 @@ class PObject{
 				o1.vel_x = 0, o1.vel_y = 0, o1.vel_z = 0
 				o2.vel_x = 0, o2.vel_y = 0, o2.vel_z = 0
 			}
+		}`)
+		parallelizer.includeSequentialFunc(`function newObject(){
+			doStuff
 		}`)
 		
 		parallelizer.done()

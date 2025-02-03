@@ -8,54 +8,26 @@ export class CPU_Parallelizer{
 		this.w = []
 		this.curId = 0
 		this.code = [`
+let sequentialSync
 let funcs = new Map()
 onmessage = function(e){
 	const pkt = e.data
-	for(let x=pkt.minX; x<pkt.maxX; x++) for(let y=pkt.minY; y<pkt.maxY; y++) for(let z=pkt.minZ; z<pkt.maxZ; z++){
-		funcs.get(pkt.name)(x,y,z, ...pkt.args)
+	if(pkt.args){
+		for(let x=pkt.minX; x<pkt.maxX; x++) for(let y=pkt.minY; y<pkt.maxY; y++) for(let z=pkt.minZ; z<pkt.maxZ; z++){
+			funcs.get(pkt.name)(x,y,z, ...pkt.args)
+		}
+	}else if(pkt.sequentialSync){
+		sequentialSync = pkt.sequentialSync
 	}
 }
-${insideAlloc.alloc}
-${insideAlloc.free}
 `]
 		this.classes = {}
 	}
 	include(source){
-		let ast = parse(source, this)
-		let replace = []
-		acorn.walk.full(ast, function(node, state, type){
-			if(node.getFromBuffer){
-				let dataType
-				switch(node.getFromBuffer.type.typeAnnotation.typeAnnotation.type){
-					case "TSNumberKeyword": dataType = "Float32"; break
-					case "TSBooleanKeyword": dataType = "Uint8"; break
-				}
-				if(node.getFromBuffer.assign){ // convert a.b=1 to mem.set(a+0,1)
-					replace.push([node.getFromBuffer.assign, node.getFromBuffer.inWhichBuffer+".set"+dataType+"("+node.getFromBuffer.name+"+"+node.getFromBuffer.offset+","+source.substring(node.getFromBuffer.assign.right.start,node.getFromBuffer.assign.right.end)+")"])
-				}else{ // convert a.b to mem.get(a+0)
-					replace.push([node, node.getFromBuffer.inWhichBuffer+".get"+dataType+"("+node.getFromBuffer.name+"+"+node.getFromBuffer.offset+")"])
-				}
-			}
-			if(node.remove){
-				replace.push([node, ""])
-			}
-			if(node.typeAnnotation){
-				replace.push([node.typeAnnotation, ""])
-			}
-		})
-		
-		replace.sort((a,b) => (a[0].start-b[0].start)||0)
-		let str="",previ=0
-		for(let i of replace){
-			str+=source.slice(previ,i[0].start)
-			str+=i[1]
-			previ=i[0].end
-		}
-		str+=source.slice(previ)
-		console.log(str)
-		this.code.push(str)
+		this.code.push(applyReplace(source, transpileToJS(source, this)))
+		this.code.push("\n")
 	}
-	create(func){
+	createParallelFunc(func){
 		let name = "func"+this.curId++
 		this.include("funcs.set('"+name+"',"+func.toString()+");")
 
@@ -68,11 +40,30 @@ ${insideAlloc.free}
 			}
 		}
 	}
+	includeSequentialFunc(func){
+		let source = func.toString()
+		let ast = transpileToJS(source, this)
+		acorn.walk.simple(ast, {
+			FunctionDeclaration:function(node){
+				ast.replace.push([node.body.body[0].start,node.body.body[0].start, "\nwhile(Atomics.compareExchange(sequentialSync,0, 0,1) !== 0) Atomics.wait(sequentialSync,0, 1);\n"])
+				ast.replace.push([node.body.body[node.body.body.length-1].end,node.body.body[node.body.body.length-1].end, "\nAtomics.store(sequentialSync,0,0); Atomics.notify(sequentialSync,0, 1);\n"])
+			}
+		})
+		this.code.push(applyReplace(source, ast))
+		this.code.push("\n")
+	}
 	done(){
+		this.code.push(`postMessage("started")`)
+		console.log(this.code)
 		const workerURL = URL.createObjectURL(new Blob(this.code, { type: "text/javascript" }))
 		let wcount = (navigator.hardwareConcurrency||1)-1||1
+		let sequentialSync = new Int32Array(new SharedArrayBuffer(4))
 		for(let i=0;i<wcount;i++){
-			this.w.push(new Worker(workerURL))
+			let w = new Worker(workerURL)
+			w.onmessage = e => {
+				if(e.data === "started") w.postMessage({sequentialSync})
+			}
+			this.w.push(w)
 		}
 	}
 	createBuffer(){
@@ -80,20 +71,58 @@ ${insideAlloc.free}
 		view.Uint8Array = new Uint8Array(view.buffer)
 		return view
 	}
-	alloc(arr,size){
-		insideAlloc.alloc(arr,size,false)
+}
+
+export function transpileToJS(source, parallelizer){
+	let ast = parse(source, parallelizer)
+	let replace = []
+	acorn.walk.full(ast, function(node, state, type){
+		if(node.getFromBuffer){
+			let dataType
+			switch(node.getFromBuffer.type.typeAnnotation.typeAnnotation.type){
+				case "TSNumberKeyword": dataType = "Float32"; break
+				case "TSBooleanKeyword": dataType = "Uint8"; break
+			}
+			if(node.getFromBuffer.assign){ // convert a.b=1 to mem.set(a+0,1)
+				replace.push([node.getFromBuffer.assign.start,node.getFromBuffer.assign.end, node.getFromBuffer.inWhichBuffer+".set"+dataType+"("+node.getFromBuffer.name+"+"+node.getFromBuffer.offset+","+source.substring(node.getFromBuffer.assign.right.start,node.getFromBuffer.assign.right.end)+")"])
+			}else{ // convert a.b to mem.get(a+0)
+				replace.push([node.start,node.end, node.getFromBuffer.inWhichBuffer+".get"+dataType+"("+node.getFromBuffer.name+"+"+node.getFromBuffer.offset+")"])
+			}
+		}
+		if(node.remove){
+			replace.push([node.start,node.end, ""])
+		}
+		if(node.typeAnnotation){
+			replace.push([node.typeAnnotation.start,node.typeAnnotation.end, ""])
+		}
+	})
+	ast.replace = replace
+	return ast
+}
+
+export function applyReplace(source, {replace}){
+	replace.sort((a,b) => (a[0]-b[0])||0)
+	let str="",previ=0
+	for(let i of replace){
+		str+=source.slice(previ,i[0])
+		str+=i[2]
+		previ=i[1]
 	}
-	alloc(ptr){
-		insideAlloc.alloc(ptr,false)
-	}
+	str+=source.slice(previ)
+	return str
 }
 
 acorn.walk.base.ClassProperty = acorn.walk.base.PropertyDefinition
+/**
+ * Finds and set types.
+ * convert `anObject<objectsBuffer>` and `anObject.x`
+ */
 export function parse(source, parallelizer){
 	let ast = parser.parse(source, {plugins:["typescript","estree"]}).program
 	let {classes} = parallelizer
 	let vartypes = {}
 	acorn.walk.ancestor(ast, {
+		// Find a.b and a.b=1
 		MemberExpression:function(node, state, ancestors){
 			if(vartypes[node.object.name] && ancestors.includes(vartypes[node.object.name].block)){
 				let type = vartypes[node.object.name]
@@ -106,6 +135,7 @@ export function parse(source, parallelizer){
 				}
 			}
 		},
+		// Choose offsets for class properties
 		ClassDeclaration:function(node, state, ancestors){
 			let properties = {}, offset = 0
 			for(let d of node.body.body){
@@ -119,6 +149,7 @@ export function parse(source, parallelizer){
 		}
 	}, {
 		...acorn.walk.base,
+		// Find types and buffers in function parameters
 		FunctionDeclaration:function(node, state, c){
 			for(let d of node.params){
 				if(d.typeAnnotation && classes[d.typeAnnotation.typeAnnotation.typeName.name]){
@@ -146,8 +177,7 @@ function sizeOf(node){
 
 const insideAllocUnempty = 1<<31
 export const insideAlloc = {
-	alloc: function alloc(arr,size, atomics=true){
-		if(atomics) while(Atomics.compareExchange(arr,1, 0,1) !== 0) Atomics.wait(arr,1, 1)
+	alloc: function alloc(arr,size){
 		let i = arr[0]||2; //cur
 		let v = arr[i+1];
 		let resetTimes = 0;
@@ -177,11 +207,9 @@ export const insideAlloc = {
 				arr[i+v] = v-size- 2;
 			}
 		}
-		if(atomics) Atomics.store(arr,1,0), Atomics.notify(arr,1, 1)
 		return i+2;
 	},
-	free:function free(arr, xptr, atomics=true){
-		if(atomics) while(Atomics.compareExchange(arr,1, 0,1) !== 0) Atomics.wait(arr,1, 1)
+	free:function free(arr, xptr){
 		let i = xptr - 2;
 		arr[i+1] = arr[i+1]&(~insideAllocUnempty);
 		let prevI = i-arr[i];
@@ -201,6 +229,5 @@ export const insideAlloc = {
 			arr[i+1] = newNext;
 			arr[i+newNext] = newNext;
 		}
-		if(atomics) Atomics.store(arr,1,0), Atomics.notify(arr,1, 1)
 	}
 }
