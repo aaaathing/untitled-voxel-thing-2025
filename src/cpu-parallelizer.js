@@ -11,17 +11,12 @@ export class CPU_Parallelizer{
 let funcs = new Map()
 onmessage = function(e){
 	const pkt = e.data
-	switch(pkt.type){
-		//case "create":
-		//	funcs.set(pkt.name, new Function(pkt.func)())
-		//	break
-		case "run":
-			for(let x=pkt.minX; x<pkt.maxX; x++) for(let y=pkt.minY; y<pkt.maxY; y++) for(let z=pkt.minZ; z<pkt.maxZ; z++){
-				funcs.get(pkt.name)(x,y,z, ...pkt.args)
-			}
-			break
+	for(let x=pkt.minX; x<pkt.maxX; x++) for(let y=pkt.minY; y<pkt.maxY; y++) for(let z=pkt.minZ; z<pkt.maxZ; z++){
+		funcs.get(pkt.name)(x,y,z, ...pkt.args)
 	}
 }
+${insideAlloc.alloc}
+${insideAlloc.free}
 `]
 		this.classes = {}
 	}
@@ -64,12 +59,11 @@ onmessage = function(e){
 		let name = "func"+this.curId++
 		this.include("funcs.set('"+name+"',"+func.toString()+");")
 
-		//for(let w of this.w) w.postMessage({type:"create", name})
 		return function(sx,sy,sz,...args){
 			let step = this.w.length/sx
 			let x = 0
 			for(let w of this.w){
-				w.postMessage({type:"run", name, args, minX:x, minY:0,minZ:0, maxX:x+step, maxY:sy,maxZ:sz})
+				w.postMessage({name, args, minX:x, minY:0,minZ:0, maxX:x+step, maxY:sy,maxZ:sz})
 				x += step
 			}
 		}
@@ -82,7 +76,15 @@ onmessage = function(e){
 		}
 	}
 	createBuffer(){
-		return new DataView(new SharedArrayBuffer(0,{maxByteLength:2**34}))
+		let view = new DataView(new SharedArrayBuffer(0,{maxByteLength:2**34}))
+		view.Uint8Array = new Uint8Array(view.buffer)
+		return view
+	}
+	alloc(arr,size){
+		insideAlloc.alloc(arr,size,false)
+	}
+	alloc(ptr){
+		insideAlloc.alloc(ptr,false)
 	}
 }
 
@@ -137,5 +139,68 @@ function sizeOf(node){
 		case "TSNumberKeyword": return 4
 		case "TSBooleanKeyword": return 1
 		default: throw new Error("no type "+node.typeAnnotation.typeAnnotation.type)
+	}
+}
+
+// -------- allocator ---------
+
+const insideAllocUnempty = 1<<31
+export const insideAlloc = {
+	alloc: function alloc(arr,size, atomics=true){
+		if(atomics) while(Atomics.compareExchange(arr,1, 0,1) !== 0) Atomics.wait(arr,1, 1)
+		let i = arr[0]||2; //cur
+		let v = arr[i+1];
+		let resetTimes = 0;
+		while(((v&insideAllocUnempty) || ((v&(~insideAllocUnempty))!==size+2 && (v&(~insideAllocUnempty))<=size+2+2 && v != 0))){
+			i += v&(~insideAllocUnempty);
+			v = arr[i+1];
+			if(i+2+size+2>arr.length){
+				if(resetTimes){
+					//while(i+2+size+2>arr.length) arr = this.arr = lengthenArr(arr)
+					arr.buffer.grow(i+2+size+2)
+				}else{
+					i = 1;
+					v = arr[i+1]
+					resetTimes++;
+				}
+			}
+		}
+		arr[0] = i; //cur
+		//if same emptyness length is 0, it is at the end
+		//after this, v should not have unemptyChunkData in it
+		arr[i+1] = (2+size)|insideAllocUnempty;
+		if(size+2 != v){
+			let i2 = i+2+size;
+			arr[i2] = 2+size;
+			if(v != 0){ //not at end
+				arr[i2+1] = v-size- 2;
+				arr[i+v] = v-size- 2;
+			}
+		}
+		if(atomics) Atomics.store(arr,1,0), Atomics.notify(arr,1, 1)
+		return i+2;
+	},
+	free:function free(arr, xptr, atomics=true){
+		if(atomics) while(Atomics.compareExchange(arr,1, 0,1) !== 0) Atomics.wait(arr,1, 1)
+		let i = xptr - 2;
+		arr[i+1] = arr[i+1]&(~insideAllocUnempty);
+		let prevI = i-arr[i];
+		let prevNext = arr[prevI+1];
+		if(arr[i] && !(prevNext&insideAllocUnempty) && i != 0){//previous is empty, merge
+			let newNext = prevNext+arr[i+1];
+			if(this.cur == i){this.cur = prevI;}
+			i = prevI;
+			arr[i+1] = newNext;
+			arr[i+newNext] = newNext;
+		}
+		let nextI = i+arr[i+1];
+		let nextNext = arr[nextI+1];
+		if(arr[i+1] && !(nextNext&insideAllocUnempty)){//next is empty, merge
+			let newNext = arr[i+1]+nextNext;
+			if(this.cur == nextI){this.cur = i;}
+			arr[i+1] = newNext;
+			arr[i+newNext] = newNext;
+		}
+		if(atomics) Atomics.store(arr,1,0), Atomics.notify(arr,1, 1)
 	}
 }
