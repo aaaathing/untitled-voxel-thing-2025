@@ -6,26 +6,23 @@ globalThis.parser = parser
 export class CPU_Parallelizer{
 	classes = {}
 	funcs = new Map()
+	storage = new Map()
 	constructor(){
 		this.w = []
 		this.curId = 0
-		this.code = [`
-let sequentialSync
-let funcs = new Map()
-onmessage = function(e){
-	const pkt = e.data
-	if(pkt.args){
-		for(let x=pkt.minX; x<pkt.maxX; x++) for(let y=pkt.minY; y<pkt.maxY; y++) for(let z=pkt.minZ; z<pkt.maxZ; z++){
-			funcs.get(pkt.name)(x,y,z, ...pkt.args)
-		}
-	}else if(pkt.sequentialSync){
-		sequentialSync = pkt.sequentialSync
+		this.includeCode = []
+		this.code = []
 	}
-}
-`]
+	/**
+	 * @param {[string, any][]} entries 
+	 */
+	addStorage(entries){
+		for(let e of entries) this.storage.set(e[0], e[1])
 	}
 	include(source){
-		this.code.push(applyReplace(source, transpileToJS(source, this)), "\n")
+		let code = applyReplace(source, transpileToJS(source, this))
+		this.code.push(code, "\n")
+		this.includeCode.push(code, "\n")
 	}
 	createParallelFunc(func){
 		let source = "("+func.toString()+")"
@@ -34,6 +31,7 @@ onmessage = function(e){
 		this.code.push("funcs.set('"+name+"',"+applyReplace(source, ast)+");\n")
 
 		let result = function(sx,sy,sz,...args){
+			console.log(sx,sy,sz,args)
 			let step = this.w.length/sx
 			let x = 0
 			for(let w of this.w){
@@ -57,6 +55,23 @@ onmessage = function(e){
 		this.code.push("\n")
 	}
 	done(){
+		let storageNames = Array.from(this.storage.keys()).join(",")
+		this.code.unshift(`
+let sequentialSync
+let funcs = new Map()
+onmessage = function(e){
+	const pkt = e.data
+	if(pkt.args){
+		for(let x=pkt.minX; x<pkt.maxX; x++) for(let y=pkt.minY; y<pkt.maxY; y++) for(let z=pkt.minZ; z<pkt.maxZ; z++){
+			funcs.get(pkt.name)(x,y,z, ...pkt.args)
+		}
+	}else if(pkt.storage){
+		[${storageNames}] = pkt.storage
+		sequentialSync = pkt.sequentialSync
+	}
+}
+let ${storageNames}
+`)
 		this.code.push(`postMessage("started")`)
 		console.log(this.code)
 		const workerURL = URL.createObjectURL(new Blob(this.code, { type: "text/javascript" }))
@@ -65,13 +80,13 @@ onmessage = function(e){
 		for(let i=0;i<wcount;i++){
 			let w = new Worker(workerURL)
 			w.onmessage = e => {
-				if(e.data === "started") w.postMessage({sequentialSync})
+				if(e.data === "started") w.postMessage({storage:Array.from(this.storage.values()), sequentialSync})
 			}
 			this.w.push(w)
 		}
 	}
 	runFuncs = new Map()
-	runFunc(func, ...args){
+	runFunc(usedStorage, func, ...args){
 		if(!this.runFuncs.get(func)){
 			let source = "("+func.toString()+")"
 			let ast = transpileToJS(source, this)
@@ -82,9 +97,13 @@ onmessage = function(e){
 					}
 				}
 			})
-			let newStr = "\nreturn " + applyReplace(source, ast)
+			let newStr = this.includeCode.join("")+"\n"
+			for(let s of usedStorage){
+				newStr += "let "+s+"=parallelizer.storage.get('"+s+"')\n"
+			}
+			newStr += "return " + applyReplace(source, ast)
 			console.log(newStr)
-			this.runFuncs.set(func, new Function(this.code.join("")+newStr)())
+			this.runFuncs.set(func, new Function("parallelizer", newStr)(this))
 		}
 		this.runFuncs.get(func)(...args)
 	}
