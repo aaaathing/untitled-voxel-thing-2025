@@ -143,8 +143,8 @@ export function transpileToJS(source, parallelizer){
 			}else{ // convert a.b to mem.get(a+0)
 				replace.push([node.start,node.end, node.getFromBuffer.inWhichBuffer+".get"+dataType+"("+(node.getFromBuffer.name?node.getFromBuffer.name+"+":"")+node.getFromBuffer.offset+")"])
 			}
-		}else if(node.plus){
-			replace.push([node.start,node.end, "("+source.substring(node.plus.node.start,node.plus.node.end)+"+"+node.plus.amount+")"])
+		}else if(node.addMult){
+			replace.push([node.start,node.end, "("+source.substring(node.addMult.node.start,node.addMult.node.end)+"*"+node.addMult.mult+"+"+node.addMult.add+")"])
 		}
 		if(node.remove){
 			replace.push([node.start,node.end, ""])
@@ -185,8 +185,9 @@ export function parse(source, parallelizer){
 				let type = vartypes[node.object.name]
 				switch(type.typeAnnotation.typeAnnotation.type){
 					case "TSArrayType":{ // first 4 bytes of array is length
+						let theClass = classes[type.typeAnnotation.typeAnnotation.elementType.typeName.name]
 						if(node.computed){ // array[index]
-							node.plus = {node:node.property, amount:4}
+							node.addMult = {node:node.property, mult:theClass.size, add:4}
 						}else if(node.property.name === "length"){ // array.length
 							node.getFromBuffer = {
 								inWhichBuffer: node.object.name,

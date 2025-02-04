@@ -12,7 +12,7 @@ class PObject{
 }
 	
 function objects_collide(o1:PObject<allObjects>, o2:PObject<allObjects>){ //simple
-  return o1.x + o1.bounds_min_x < o2.x + o2.bounds_max_x && o1.y + o1.bounds_min_y < o2.y + o2.bounds_max_y && o1.z + o1.bounds_min_z < o2.z + o2.bounds_max_z
+	return o1.x + o1.bounds_min_x < o2.x + o2.bounds_max_x && o1.y + o1.bounds_min_y < o2.y + o2.bounds_max_y && o1.z + o1.bounds_min_z < o2.z + o2.bounds_max_z
 	&& o1.x + o1.bounds_max_x > o2.x + o2.bounds_min_x && o1.y + o1.bounds_max_y > o2.y + o2.bounds_min_y && o1.z + o1.bounds_max_z > o2.z + o2.bounds_min_z
 }
 `)
@@ -36,9 +36,9 @@ function objects_collide(o1:PObject<allObjects>, o2:PObject<allObjects>){ //simp
 		parallelizer.push(this.allObjects, "PObject")
 	}
 	async tick(){
-		this.parallelizer.runFunc(["allObjects"], `function(){
+		this.parallelizer.runFunc(["allObjects"], `function(allObjects: PObject[]){
 			for(let i=0;i<allObjects.length; i++)for(let j=0;j<allObjects.length; j++){
-				if(objects_collide(allObjects[i],allObjects[j],allObjects)){
+				if(objects_collide(allObjects[i],allObjects[j])){
 					let o: PObject<allObjects> = allObjects[i]
 					collide(o.bounds_max_x-o.bounds_min_x,o.bounds_max_y-o.bounds_min_y,o.bounds_max_z-o.bounds_min_z, allObjects, o,allObjects[j])
 				}
