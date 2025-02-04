@@ -5,6 +5,7 @@ globalThis.parser = parser
 
 export class CPU_Parallelizer{
 	classes = {}
+	vartypes = {}
 	funcs = new Map()
 	storage = new Map()
 	constructor(){
@@ -70,7 +71,6 @@ onmessage = function(e){
 		sequentialSync = pkt.sequentialSync
 	}
 }
-let ${storageNames}
 `)
 		this.code.push(`postMessage("started")`)
 		console.log(this.code)
@@ -99,7 +99,7 @@ let ${storageNames}
 			})
 			let newStr = this.includeCode.join("")+"\n"
 			for(let s of usedStorage){
-				newStr += "let "+s+"=parallelizer.storage.get('"+s+"')\n"
+				newStr += s+"=parallelizer.storage.get('"+s+"')\n"
 			}
 			newStr += "return " + applyReplace(source, ast)
 			console.log(newStr)
@@ -176,13 +176,12 @@ acorn.walk.base.ClassProperty = acorn.walk.base.PropertyDefinition
  */
 export function parse(source, parallelizer){
 	let ast = parser.parse(source, {plugins:["typescript","estree"]}).program
-	let {classes} = parallelizer
-	let vartypes = {}
+	let {classes, vartypes} = parallelizer
 	acorn.walk.ancestor(ast, {
 		// Find a.b and a.b=1
 		MemberExpression:function(node, state, ancestors){
-			if(vartypes[node.object.name] && ancestors.includes(vartypes[node.object.name].inBlock)){
-				let type = vartypes[node.object.name]
+			let type = vartypes[node.object.name]
+			if(type && (!type.inBlock || ancestors.includes(type.inBlock))){
 				switch(type.typeAnnotation.typeAnnotation.type){
 					case "TSArrayType":{ // first 4 bytes of array is length
 						let theClass = classes[type.typeAnnotation.typeAnnotation.elementType.typeName.name]
