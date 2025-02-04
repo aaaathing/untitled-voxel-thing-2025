@@ -1,6 +1,7 @@
 export class World{
 	objects = []
 	constructor(parallelizer){
+		this.parallelizer = parallelizer
 		parallelizer.include(`
 class PObject{
 	x:number; y:number; z:number
@@ -8,8 +9,14 @@ class PObject{
 	bounds_max_x:number;bounds_max_y:number;bounds_max_z:number
 	vel_x:number;vel_y:number;vel_z:number
 	volume:number
-}`)
-		this.collide = parallelizer.createParallelFunc(`function(x,y,z,allObjects,o1:PObject<allObjects>,o2:PObject<allObjects>){
+}
+	
+function objects_collide(o1:PObject<allObjects>, o2:PObject<allObjects>, allObjects){ //simple
+  return o1.x + o1.bounds_min_x < o2.x + o2.bounds_max_x && o1.y + o1.bounds_min_y < o2.y + o2.bounds_max_y && o1.z + o1.bounds_min_z < o2.z + o2.bounds_max_z
+	&& o1.x + o1.bounds_max_x > o2.x + o2.bounds_min_x && o1.y + o1.bounds_max_y > o2.y + o2.bounds_min_y && o1.z + o1.bounds_max_z > o2.z + o2.bounds_min_z
+}
+`)
+		this.collide = parallelizer.createParallelFunc(`function collide(x,y,z,allObjects,o1:PObject<allObjects>,o2:PObject<allObjects>){
 			let otherX = Math.floor(o1.x+o1.bounds_min_x+x - o2.x-o2.bounds_min_x)
 			let otherY = Math.floor(o1.y+o1.bounds_min_y+y - o2.y-o2.bounds_min_y)
 			let otherZ = Math.floor(o1.z+o1.bounds_min_z+z - o2.z-o2.bounds_min_z)
@@ -23,19 +30,20 @@ class PObject{
 		}`)
 		
 		parallelizer.done()
+		
+		this.allObjects = parallelizer.createArray()
+		parallelizer.push(this.allObjects, "PObject")
 	}
 	async tick(){
-		for(let i=0;i<this.objects.length; i++)for(let j=0;j<this.objects.length; j++){
-			if(objects_collide(this.objects[i],this.objects[j])){
-				let o = this.objects[i]
-				this.collide(o.bounds_max_x-o.bounds_min_x,o.bounds_max_y-o.bounds_min_y,o.bounds_max_z-o.bounds_min_z, o,this.objects[j])
+		this.parallelizer.runFunc(`function(allObjects:PObject[]){
+			for(let i=0;i<allObjects.length; i++)for(let j=0;j<allObjects.length; j++){
+				if(objects_collide(allObjects[i],allObjects[j],allObjects)){
+					let o: PObject<allObjects> = allObjects[i]
+					collide(o.bounds_max_x-o.bounds_min_x,o.bounds_max_y-o.bounds_min_y,o.bounds_max_z-o.bounds_min_z, allObjects, o,allObjects[j])
+				}
 			}
-		}
+		}`, this.allObjects)
 	}
-}
-function objects_collide(o1, o2){ //simple
-  return o1.x + o1.bounds_min_x < o2.x + o2.bounds_max_x && o1.y + o1.bounds_min_y < o2.y + o2.bounds_max_y && o1.z + o1.bounds_min_z < o2.z + o2.bounds_max_z
-	&& o1.x + o1.bounds_max_x > o2.x + o2.bounds_min_x && o1.y + o1.bounds_max_y > o2.y + o2.bounds_min_y && o1.z + o1.bounds_max_z > o2.z + o2.bounds_min_z
 }
 
 /*

@@ -4,6 +4,8 @@ globalThis.parser = parser
 
 
 export class CPU_Parallelizer{
+	classes = {}
+	funcs = new Map()
 	constructor(){
 		this.w = []
 		this.curId = 0
@@ -21,17 +23,17 @@ onmessage = function(e){
 	}
 }
 `]
-		this.classes = {}
 	}
 	include(source){
-		this.code.push(applyReplace(source, transpileToJS(source, this)))
-		this.code.push("\n")
+		this.code.push(applyReplace(source, transpileToJS(source, this)), "\n")
 	}
 	createParallelFunc(func){
-		let name = "func"+this.curId++
-		this.include("funcs.set('"+name+"',"+func.toString()+");")
+		let source = "("+func.toString()+")"
+		let ast = transpileToJS(source, this)
+		let name = acorn.walk.findNodeAfter(ast,0, "FunctionExpression").node.id.name
+		this.code.push("funcs.set('"+name+"',"+applyReplace(source, ast)+");\n")
 
-		return function(sx,sy,sz,...args){
+		let result = function(sx,sy,sz,...args){
 			let step = this.w.length/sx
 			let x = 0
 			for(let w of this.w){
@@ -39,6 +41,8 @@ onmessage = function(e){
 				x += step
 			}
 		}
+		this.funcs.set(name, result)
+		return result
 	}
 	includeSequentialFunc(func){
 		let source = func.toString()
@@ -66,10 +70,41 @@ onmessage = function(e){
 			this.w.push(w)
 		}
 	}
-	createBuffer(){
-		let view = new DataView(new SharedArrayBuffer(0,{maxByteLength:2**34}))
+	runFuncs = new Map()
+	runFunc(func, ...args){
+		if(!this.runFuncs.get(func)){
+			let source = "("+func.toString()+")"
+			let ast = transpileToJS(source, this)
+			acorn.walk.simple(ast, {
+				CallExpression: (node) => {
+					if(this.funcs.get(node.callee.name)){
+						ast.replace.push([node.callee.start,node.callee.end, `parallelizer.funcs.get(${JSON.stringify(node.callee.name)})`])
+					}
+				}
+			})
+			let newStr = "\nreturn " + applyReplace(source, ast)
+			console.log(newStr)
+			this.runFuncs.set(func, new Function(this.code.join("")+newStr)())
+		}
+		this.runFuncs.get(func)(...args)
+	}
+	/** first element for length */
+	createArray(){
+		let view = new DataView(new SharedArrayBuffer(4,{maxByteLength:2**34}))
 		view.Uint8Array = new Uint8Array(view.buffer)
 		return view
+	}
+	push(arr, type){
+		let length = arr.getUint32(0) + 1
+		arr.setUint32(0,length)
+		let classSize = this.classes[type].size
+		if(length*classSize>arr.buffer.byteLength) arr.buffer.grow(length*classSize)
+	}
+	pop(arr, index, type){
+		let length = arr.getUint32(0) - 1
+		arr.setUint32(0,length)
+		let classSize = this.classes[type].size
+		arr.Uint8Array.set(arr.Uint8Array.subarray(index*classSize + classSize), index*classSize)
 	}
 }
 
@@ -79,15 +114,18 @@ export function transpileToJS(source, parallelizer){
 	acorn.walk.full(ast, function(node, state, type){
 		if(node.getFromBuffer){
 			let dataType
-			switch(node.getFromBuffer.type.typeAnnotation.typeAnnotation.type){
+			switch(node.getFromBuffer.type){
 				case "TSNumberKeyword": dataType = "Float32"; break
 				case "TSBooleanKeyword": dataType = "Uint8"; break
+				case "uint32": dataType = "Uint32"; break
 			}
 			if(node.getFromBuffer.assign){ // convert a.b=1 to mem.set(a+0,1)
-				replace.push([node.getFromBuffer.assign.start,node.getFromBuffer.assign.end, node.getFromBuffer.inWhichBuffer+".set"+dataType+"("+node.getFromBuffer.name+"+"+node.getFromBuffer.offset+","+source.substring(node.getFromBuffer.assign.right.start,node.getFromBuffer.assign.right.end)+")"])
+				replace.push([node.getFromBuffer.assign.start,node.getFromBuffer.assign.end, node.getFromBuffer.inWhichBuffer+".set"+dataType+"("+(node.getFromBuffer.name?node.getFromBuffer.name+"+":"")+node.getFromBuffer.offset+","+source.substring(node.getFromBuffer.assign.right.start,node.getFromBuffer.assign.right.end)+")"])
 			}else{ // convert a.b to mem.get(a+0)
-				replace.push([node.start,node.end, node.getFromBuffer.inWhichBuffer+".get"+dataType+"("+node.getFromBuffer.name+"+"+node.getFromBuffer.offset+")"])
+				replace.push([node.start,node.end, node.getFromBuffer.inWhichBuffer+".get"+dataType+"("+(node.getFromBuffer.name?node.getFromBuffer.name+"+":"")+node.getFromBuffer.offset+")"])
 			}
+		}else if(node.plus){
+			replace.push([node.start,node.end, "("+source.substring(node.plus.node.start,node.plus.node.end)+"+"+node.plus.amount+")"])
 		}
 		if(node.remove){
 			replace.push([node.start,node.end, ""])
@@ -114,7 +152,7 @@ export function applyReplace(source, {replace}){
 
 acorn.walk.base.ClassProperty = acorn.walk.base.PropertyDefinition
 /**
- * Finds and set types.
+ * Finds and set types and classes.
  * convert `anObject<objectsBuffer>` and `anObject.x`
  */
 export function parse(source, parallelizer){
@@ -124,14 +162,31 @@ export function parse(source, parallelizer){
 	acorn.walk.ancestor(ast, {
 		// Find a.b and a.b=1
 		MemberExpression:function(node, state, ancestors){
-			if(vartypes[node.object.name] && ancestors.includes(vartypes[node.object.name].block)){
+			if(vartypes[node.object.name] && ancestors.includes(vartypes[node.object.name].inBlock)){
 				let type = vartypes[node.object.name]
-				let prop = type.class.properties[node.property.name]
-				if(!prop) throw new Error("missing property "+node.property.name)
-				let pa = ancestors[ancestors.length-2]
-				node.getFromBuffer = {
-					inWhichBuffer:type.inWhichBuffer, name:node.object.name, offset:prop.offset, size:prop.size, type:prop.type,
-					assign: pa.type === "AssignmentExpression" && pa.left === node ? pa : null
+				switch(type.typeAnnotation.typeAnnotation.type){
+					case "TSArrayType":{ // first 4 bytes of array is length
+						if(node.computed){ // array[index]
+							node.plus = {node:node.property, amount:4}
+						}else if(node.property.name === "length"){ // array.length
+							node.getFromBuffer = {
+								inWhichBuffer: node.object.name,
+								offset:0, size:4, type:"uint32",
+							}
+						}
+						break
+					}
+					case "TSTypeReference":{
+						let prop = classes[type.typeAnnotation.typeAnnotation.typeName.name]?.properties[node.property.name]
+						if(!prop) throw new Error("missing property "+node.property.name)
+						let pa = ancestors[ancestors.length-2]
+						node.getFromBuffer = {
+							inWhichBuffer: type.typeAnnotation.typeAnnotation.typeParameters.params[0].typeName.name,
+							name:node.object.name, offset:prop.offset, size:prop.size, type:prop.type,
+							assign: pa.type === "AssignmentExpression" && pa.left === node ? pa : null
+						}
+						break
+					}
 				}
 			}
 		},
@@ -141,23 +196,23 @@ export function parse(source, parallelizer){
 			for(let d of node.body.body){
 				if(d.type === "ClassProperty"){
 					let size = sizeOf(d)
-					properties[d.key.name] = {offset, size, type:d}
+					properties[d.key.name] = {offset, size, type:d.typeAnnotation.typeAnnotation.type}
 					offset += size
 				}
 			}
-			classes[node.id.name] = {block:ancestors.findLast(n => n.type === "BlockStatement"), properties}
+			classes[node.id.name] = {block:ancestors.findLast(n => n.type === "BlockStatement"), properties, size:offset}
+		},
+		VariableDeclarator:function(node, state, ancestors){
+			let varname = node.id.name
+			if(node.id.typeAnnotation) vartypes[varname] = node.id, vartypes[varname].inBlock = ancestors.findLast(n => n.type === "BlockStatement")
 		}
 	}, {
 		...acorn.walk.base,
 		// Find types and buffers in function parameters
 		FunctionDeclaration:function(node, state, c){
 			for(let d of node.params){
-				if(d.typeAnnotation && classes[d.typeAnnotation.typeAnnotation.typeName.name]){
-					let varname = d.name
-					let type = d.typeAnnotation.typeAnnotation.typeName.name
-					let inWhichBuffer = d.typeAnnotation.typeAnnotation.typeParameters.params[0].typeName.name
-					vartypes[varname] = {block:node.body, class:classes[type], inWhichBuffer}
-				}
+				let varname = d.name
+				if(d.typeAnnotation) vartypes[varname] = d, vartypes[varname].inBlock = node.body
 			}
 			acorn.walk.base.FunctionDeclaration(node,state,c)
 		},
